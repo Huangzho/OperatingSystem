@@ -1,0 +1,53 @@
+SYSCALL_DEFINE2(copy,char*, src,char*, tgt)
+{
+        mm_segment_t old_fs = get_fs();  //original mode
+        set_fs(KERNEL_DS); //设置为内核模式，防止内核认为用户程序修改内核缓冲区
+
+        struct kstat k_buf;
+        char source[256];
+        char targetf[256];
+        char buf[1024];
+        int sfd;
+        int tfd;
+        int readnum;
+
+        printk("enter");
+        if(strncpy_from_user(source, src, sizeof(source))<0||strncpy_from_user(targetf, tgt, sizeof(targetf))<0)
+        {
+                printk("transfer wrong");
+                set_fs(old_fs);
+                return -EFAULT;
+        }//信息从用户到内核的拷贝
+
+        if(vfs_stat(source,&k_buf)!=0)//获取源文件权限信息
+        {
+                set_fs(old_fs);
+                return -EFAULT;
+        }
+
+        printk("transfer OK");
+        sfd=ksys_open(source,O_RDONLY,S_IRUSR);//打开文件，permit read it
+        tfd=ksys_open(targetf,O_WRONLY|O_CREAT|O_TRUNC,k_buf.mode);//创建新文件，（读写打开，如无创建文件，如有清空文件）
+        if(sfd==-1){//file open wrong
+                printk("source wrong!");
+                set_fs(old_fs);
+                return -EFAULT;
+        }
+       if(tfd==-1){//file open wrong
+                printk("target wrong!");
+                set_fs(old_fs);
+                return -EFAULT;
+        }
+        printk("open OK!");
+        while(1){//誊抄过程
+                readnum=ksys_read(sfd,buf,sizeof(buf));
+                if(readnum==0) break;
+                ksys_write(tfd,buf,readnum);
+        }
+        printk("all complete");
+        ksys_close(sfd);//关闭文件
+        ksys_close(tfd);
+        
+        set_fs(old_fs);//回复检查
+        return 0;
+}

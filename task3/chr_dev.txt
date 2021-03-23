@@ -1,0 +1,187 @@
+#include <linux/module.h>  
+#include <linux/types.h>  
+#include <linux/fs.h>  
+#include <linux/errno.h>  
+#include <linux/mm.h>  
+#include <linux/sched.h>  
+#include <linux/init.h>  
+#include <linux/cdev.h>
+#include<linux/slab.h>//kmalloc kfree
+#include<linux/ioctl.h>//ioctl
+
+#include <asm/io.h>  
+#include <asm/uaccess.h>  
+
+
+#define CHARMEM_SIZE 0x1000
+#define MEM_CLEAR 0x1
+static int chr_major;
+struct chr_dev{   //缓冲区
+        struct cdev cdev;
+        unsigned char mem[CHARMEM_SIZE];
+};
+struct chr_dev* chr_devp;
+
+
+
+
+
+int open_T(struct inode* inode, struct file* filp)
+{
+    filp->private_data = chr_devp;
+    return 0;
+}
+
+
+
+//读取文件   file pointer, user space, size(want out), long long(pointer) 
+static ssize_t read_T(struct file* filp, char __user* buf, size_t size, loff_t* ppos)
+{
+    unsigned long p = *ppos;
+    unsigned int count = size;
+    int ret = 0;
+    struct chr_dev* dev = filp->private_data;
+    if(p >= CHARMEM_SIZE)   return 0;//越界行为
+    if(count > CHARMEM_SIZE - p) return 0;
+    if(copy_to_user(buf, (void*)(dev->mem + p), count))
+        return -EINVAL;
+    else{//誊抄成功
+        *ppos += count;
+        ret = count;
+    }
+    return ret;
+}
+
+//写入文件
+static ssize_t write_T(struct file* filp, const char __user* buf, size_t size, loff_t *ppos)
+{
+    unsigned long p = *ppos;
+    unsigned int count = size;
+    int ret = 0;
+    struct chr_dev* dev = filp->private_data;
+
+    if(p >= CHARMEM_SIZE)    return 0;//越界
+    if(count > CHARMEM_SIZE - p)
+        count = CHARMEM_SIZE - p;
+    
+    if(copy_from_user(dev->mem + p, buf, count))//写入成功
+        ret = -EINVAL;
+    else{
+        *ppos += count;
+        ret = count;
+    }
+    return ret;
+}
+static loff_t llseek_T(struct file* filp, loff_t offset, int orig)
+{
+    loff_t ret = 0;
+    /* orig can be SEEK_SET, SEEK_CUR, SEEK_END */
+    switch(orig)
+    {
+        case 0:
+            if(offset < 0)//越界
+            {
+                ret = -EINVAL;
+                break;
+            }
+            if((unsigned int) offset > CHARMEM_SIZE)
+            {
+                ret = -EINVAL;
+                break;
+            }
+
+            filp->f_pos = (unsigned int) offset;
+            ret = filp->f_pos;
+            break;
+
+        case 1:
+            if((filp->f_pos + offset) > CHARMEM_SIZE)//越界
+            {
+                ret = -EINVAL;
+                break;
+            }
+            if((filp->f_pos + offset) < 0)
+            {
+                ret = -EINVAL;
+                break;
+            }
+
+            filp->f_pos += offset;
+            ret = filp->f_pos;
+            break;
+
+        default:
+            ret = - EINVAL;
+            break;
+    }
+
+    return ret;
+}
+static long ioctl_T(struct file *filp,unsigned int cmd,unsigned long arg)
+{
+	struct chr_dev* dev=filp->private_data;
+	switch(cmd){
+		case MEM_CLEAR:
+			memset(dev->mem,0,CHARMEM_SIZE);//缓冲区清空
+			break;
+		default:
+			return -EINVAL;
+
+	}
+	return 0;
+
+}
+static const struct file_operations op={//操作绑定
+        .owner=THIS_MODULE,
+        .read = read_T,
+        .write = write_T,
+        .open=open_T,
+        .llseek=llseek_T,
+        .unlocked_ioctl=ioctl_T
+};
+
+static int T_initial(void)
+{
+        int result;
+        printk("this is chr_dev enter");//调试
+        dev_t ndev;//dev number
+
+        result=alloc_chrdev_region(&ndev,0,1,"T_dev");//获得设备号
+        if(result<0){
+		printk("alloc_chrdev_region wrong");
+	       	return result;//failed
+	}
+        chr_major=MAJOR(ndev);
+        printk("chr_init(): major=%d\n,minor=%d\n",MAJOR(ndev),MINOR(ndev));//打印设备号high 12 low 20
+        chr_devp=kmalloc(sizeof(struct chr_dev),GFP_KERNEL);//分配缓冲区空间
+        if(!chr_devp){
+                result=-ENOMEM;
+                goto final;
+        }
+        memset(chr_devp,0,sizeof(struct chr_dev));//清空缓冲区
+        cdev_init(&chr_devp->cdev,&op);//static initialize初始化
+        int err=cdev_add(&chr_devp->cdev,ndev,1);//dev struct,begin number,all number；加入内核
+        if(err)
+        {
+                printk(KERN_NOTICE"ERROR happend!	nmsl\n");
+        	unregister_chrdev_region(ndev,1);//unregister
+        	kfree(chr_devp);//free malloc  chr_devp
+        }
+        return 0;
+
+final:
+       unregister_chrdev_region(ndev,1);//unregister
+       printk("kmalloc wrong");
+       	return 0;
+}
+//退出
+static void T_exit(void)
+{
+        printk("I'm out");
+        cdev_del(&chr_devp->cdev);//删除依赖关系
+        kfree(chr_devp);//释放缓冲区
+        unregister_chrdev_region(MKDEV(chr_major, 0), 1);//消除设备号
+}
+MODULE_LICENSE("GPL");
+module_init(T_initial);
+module_exit(T_exit);
